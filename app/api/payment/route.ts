@@ -3,10 +3,19 @@ import { auth } from '@/auth'
 import prisma from '@/lib/prisma'
 import Stripe from 'stripe'
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)
+function getStripeClient() {
+  const secretKey = process.env.STRIPE_SECRET_KEY
+
+  if (!secretKey) {
+    throw new Error('Missing STRIPE_SECRET_KEY environment variable')
+  }
+
+  return new Stripe(secretKey)
+}
 
 export async function POST(req: Request) {
   try {
+    const stripe = getStripeClient()
     const session = await auth()
 
     if (!session?.user) {
