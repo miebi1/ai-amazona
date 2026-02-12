@@ -1,50 +1,36 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import {
-  Elements,
-  PaymentElement,
-  useStripe,
-  useElements,
-} from '@stripe/react-stripe-js'
-import { loadStripe } from '@stripe/stripe-js'
+import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/hooks/use-toast'
-
-const stripePromise = loadStripe(
-  process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!
-)
 
 interface PaymentFormProps {
   orderId: string
 }
 
-function PaymentFormContent({ orderId }: PaymentFormProps) {
+export function PaymentForm({ orderId }: PaymentFormProps) {
   const [isLoading, setIsLoading] = useState(false)
   const { toast } = useToast()
-  const stripe = useStripe()
-  const elements = useElements()
 
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault()
+  const handlePayWithPaystack = async () => {
     setIsLoading(true)
-
-    if (!stripe || !elements) {
-      return
-    }
-
     try {
-      // Confirm the payment
-      const result = await stripe.confirmPayment({
-        elements,
-        confirmParams: {
-          return_url: `${window.location.origin}/order-confirmation/${orderId}`,
-        },
+      const res = await fetch('/api/payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId }),
       })
+      const data = await res.json()
 
-      if (result.error) {
-        throw new Error(result.error.message)
+      if (!res.ok) {
+        throw new Error(data.message || data.error || 'Failed to start payment')
       }
+
+      if (data.authorization_url) {
+        window.location.href = data.authorization_url
+        return
+      }
+      throw new Error('No payment URL received')
     } catch (error) {
       console.error('[PAYMENT_ERROR]', error)
       toast({
@@ -58,48 +44,19 @@ function PaymentFormContent({ orderId }: PaymentFormProps) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className='space-y-6'>
-      <PaymentElement />
-      <Button type='submit' className='w-full' disabled={isLoading || !stripe}>
-        {isLoading ? 'Processing...' : 'Pay Now'}
+    <div className='space-y-6'>
+      <p className='text-sm text-muted-foreground'>
+        You will be redirected to Paystack to complete your payment securely.
+      </p>
+      <Button
+        type='button'
+        className='w-full'
+        size='lg'
+        disabled={isLoading}
+        onClick={handlePayWithPaystack}
+      >
+        {isLoading ? 'Redirecting...' : 'Pay with Paystack'}
       </Button>
-    </form>
-  )
-}
-
-export function PaymentForm({ orderId }: PaymentFormProps) {
-  const [clientSecret, setClientSecret] = useState<string>('')
-
-  useEffect(() => {
-    // Get the client secret when the component mounts
-    fetch('/api/payment', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        orderId,
-      }),
-    })
-      .then((res) => res.json())
-      .then((data) => setClientSecret(data.clientSecret))
-      .catch((error) => console.error('Failed to get client secret:', error))
-  }, [orderId])
-
-  if (!clientSecret) {
-    return null
-  }
-
-  const options = {
-    clientSecret,
-    appearance: {
-      theme: 'stripe' as const,
-    },
-  }
-
-  return (
-    <Elements stripe={stripePromise} options={options}>
-      <PaymentFormContent orderId={orderId} />
-    </Elements>
+    </div>
   )
 }

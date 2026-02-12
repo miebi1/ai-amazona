@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
+import { SpeedInsights } from '@vercel/speed-insights/next'
 import { Toaster } from '@/components/ui/toaster'
 import './globals.css'
 import { auth } from '@/auth'
@@ -37,6 +38,7 @@ export default async function RootLayout({
           <CartProvider>
             {children}
             <Toaster />
+            <SpeedInsights />
           </CartProvider>
         </SessionProvider>
       </body>

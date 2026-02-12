@@ -1,90 +1,90 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import prisma from '@/lib/prisma'
-import Stripe from 'stripe'
 
-function getStripeClient() {
-  const secretKey = process.env.STRIPE_SECRET_KEY
+const PAYSTACK_BASE = 'https://api.paystack.co'
 
-  if (!secretKey) {
-    throw new Error('Missing STRIPE_SECRET_KEY environment variable')
-  }
+function getSecretKey() {
+  const key = process.env.PAYSTACK_SECRET_KEY
+  if (!key) throw new Error('Missing PAYSTACK_SECRET_KEY')
+  return key
+}
 
-  return new Stripe(secretKey)
+function getBaseUrl(req: Request): string {
+  const host = req.headers.get('host') || ''
+  const proto = req.headers.get('x-forwarded-proto') || 'http'
+  if (host) return `${proto === 'https' ? 'https' : 'http'}://${host}`
+  return process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : 'http://localhost:3000'
 }
 
 export async function POST(req: Request) {
   try {
-    const stripe = getStripeClient()
     const session = await auth()
-
     if (!session?.user) {
       return new NextResponse('Unauthorized', { status: 401 })
     }
 
     const body = await req.json()
     const { orderId } = body
-
     if (!orderId) {
       return new NextResponse('Order ID is required', { status: 400 })
     }
 
-    // Get the order
     const order = await prisma.order.findUnique({
-      where: {
-        id: orderId,
-        userId: session.user.id,
-      },
-      include: {
-        items: {
-          include: {
-            product: true,
-          },
-        },
-        shippingAddress: true,
-      },
+      where: { id: orderId, userId: session.user.id },
+      include: { shippingAddress: true },
     })
 
     if (!order) {
       return new NextResponse('Order not found', { status: 404 })
     }
 
-    // If order is already paid, return error
     if (order.stripePaymentId) {
       return new NextResponse('Order is already paid', { status: 400 })
     }
 
-    // Calculate final amount including tax and shipping
-    const subtotal = order.total
-    const shipping = 10 // Fixed shipping cost
-    const tax = subtotal * 0.1 // 10% tax
-    const total = Math.round((subtotal + shipping + tax) * 100) // Convert to cents
+    const shipping = 10
+    const tax = order.total * 0.1
+    const totalAmount = order.total + shipping + tax
+    // Amount in subunits: kobo for NGN, cents for USD
+    const amountInSubunits = Math.round(totalAmount * 100)
+    const currency = (process.env.PAYSTACK_CURRENCY as string) || 'NGN'
+    const reference = `order_${order.id}_${Date.now()}`.replace(/[^a-zA-Z0-9._-]/g, '_')
+    const baseUrl = getBaseUrl(req)
+    const callbackUrl = `${baseUrl}/order-confirmation/${order.id}`
 
-    // Create payment intent
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: total,
-      currency: 'usd',
-      metadata: {
-        orderId: order.id,
-        userId: session.user.id,
+    const res = await fetch(`${PAYSTACK_BASE}/transaction/initialize`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${getSecretKey()}`,
       },
-      automatic_payment_methods: {
-        enabled: true,
-      },
+      body: JSON.stringify({
+        email: session.user.email!,
+        amount: amountInSubunits,
+        currency,
+        reference,
+        callback_url: callbackUrl,
+        metadata: {
+          order_id: order.id,
+          user_id: session.user.id,
+        },
+      }),
     })
 
-    // Update order with payment intent ID
-    await prisma.order.update({
-      where: {
-        id: order.id,
-      },
-      data: {
-        stripePaymentId: paymentIntent.id,
-      },
-    })
+    const data = await res.json()
+    if (!data.status || !data.data?.authorization_url) {
+      console.error('[PAYMENT] Paystack initialize failed:', data)
+      return new NextResponse(data.message || 'Failed to initialize payment', {
+        status: 502,
+      })
+    }
 
     return NextResponse.json({
-      clientSecret: paymentIntent.client_secret,
+      authorization_url: data.data.authorization_url,
+      reference: data.data.reference,
     })
   } catch (error) {
     console.error('[PAYMENT_ERROR]', error)
